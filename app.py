@@ -61,22 +61,6 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
             )
             page = await context.new_page()
 
-            # Abort heavy third-party ad networks (proper async handler)
-            async def handle_route(route):
-                try:
-                    url = route.request.url.lower()
-                    if any(ad in url for ad in ["googlesyndication", "doubleclick", "google-analytics", "googletagmanager", "adservice", "amazon-adsystem"]):
-                        await route.abort()
-                    else:
-                        await route.continue_()
-                except Exception:
-                    try:
-                        await route.continue_()
-                    except Exception:
-                        pass
-
-            await page.route("**/*", handle_route)
-
             try:
                 await page.goto(profile_url, timeout=30000, wait_until="domcontentloaded")
             except Exception as nav_err:
