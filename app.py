@@ -29,6 +29,7 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
 
     cached = _cache.get(cache_key)
     if cached and (time.time() - cached["timestamp"] < CACHE_TTL):
+        print(f"[{cache_key}] Returning cached titles", flush=True)
         return cached["data"]
 
     encoded_user = quote(username)
@@ -36,35 +37,80 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
 
     # Use headless=False if display is available (Xvfb provides DISPLAY=:99)
     use_headless = "DISPLAY" not in os.environ
+    print(f"[{cache_key}] Fetching {profile_url} (headless={use_headless}, DISPLAY={os.environ.get('DISPLAY')})", flush=True)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=use_headless,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--window-size=1280,800"
+            ]
         )
         try:
-            page = await browser.new_page()
-            await page.goto(profile_url, timeout=35000)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 800}
+            )
+            page = await context.new_page()
 
-            frame = page.frames[0]
+            try:
+                await page.goto(profile_url, timeout=30000, wait_until="domcontentloaded")
+            except Exception as nav_err:
+                print(f"[{cache_key}] Navigation notice: {nav_err}", flush=True)
+
             loaded = False
-            for _ in range(20):
+            for i in range(25):
                 await page.wait_for_timeout(1000)
                 try:
-                    title = await frame.title()
-                    if "Profile | RLStats" in title:
+                    title = await page.title()
+                    print(f"[{cache_key}] Sec {i+1}: Title='{title}'", flush=True)
+                    if "profile | rlstats" in title.lower() or ("rlstats" in title.lower() and "moment" not in title.lower()):
                         loaded = True
                         break
                 except Exception:
                     pass
 
+                # If still on Cloudflare Turnstile, attempt to click the checkbox
+                if i in (3, 6, 9, 13):
+                    try:
+                        # 1. Try clicking via Cloudflare challenge frames
+                        for frame in page.frames:
+                            if "challenges.cloudflare.com" in frame.url:
+                                for sel in ["input[type=checkbox]", "#challenge-stage", "label", "body"]:
+                                    try:
+                                        el = await frame.query_selector(sel)
+                                        if el:
+                                            await el.click(timeout=1000)
+                                            print(f"[{cache_key}] Clicked Turnstile frame selector '{sel}'", flush=True)
+                                            break
+                                    except Exception:
+                                        pass
+
+                        # 2. Try clicking iframe bounding box from the main page
+                        for iframe in await page.query_selector_all("iframe"):
+                            src = await iframe.get_attribute("src") or ""
+                            if "challenges.cloudflare" in src or "turnstile" in src:
+                                box = await iframe.bounding_box()
+                                if box:
+                                    cx = box["x"] + 30
+                                    cy = box["y"] + box["height"] / 2
+                                    print(f"[{cache_key}] Clicking Turnstile widget at ({cx}, {cy})", flush=True)
+                                    await page.mouse.click(cx, cy)
+                    except Exception as click_err:
+                        print(f"[{cache_key}] Click attempt error: {click_err}", flush=True)
+
             if not loaded:
+                print(f"[{cache_key}] Failed: page did not load in time", flush=True)
                 return {
                     "found": False,
                     "error": f"Could not load profile for {username} on {platform_norm.upper()}. Profile may be private or not found."
                 }
 
-            html = await frame.content()
+            html = await page.content()
         finally:
             await browser.close()
 
@@ -135,6 +181,7 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
                     "badge_img": badge_img
                 })
 
+    print(f"[{cache_key}] Success! Found {len(titles)} titles for {display_name}", flush=True)
     result = {
         "found": True,
         "display_name": display_name,
