@@ -83,12 +83,17 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
                 print(f"[{cache_key}] Navigation notice: {nav_err}", flush=True)
 
             loaded = False
-            for i in range(25):
+            already_clicked = False
+            for i in range(30):
                 await page.wait_for_timeout(1000)
                 try:
                     title = await page.title()
                     print(f"[{cache_key}] Sec {i+1}: Title='{title}'", flush=True)
-                    # Don't break if title is still loading/redirecting
+
+                    if "loading" in title.lower():
+                        print(f"[{cache_key}] Turnstile cleared! Waiting for profile to render...", flush=True)
+
+                    # Check for completed profile load
                     if "profile | rlstats" in title.lower() and not title.lower().startswith("loading"):
                         loaded = True
                         break
@@ -98,11 +103,9 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
                 except Exception:
                     pass
 
-                # If still on Cloudflare Turnstile, attempt to click the checkbox
-                if i in (3, 6, 9, 13):
+                # Click the Turnstile checkbox ONCE at second 4 if still on "Just a moment..."
+                if not already_clicked and i >= 3:
                     try:
-                        clicked = False
-                        # 1. Prioritize clicking iframe bounding box with real mouse click
                         for iframe in await page.query_selector_all("iframe"):
                             src = await iframe.get_attribute("src") or ""
                             if "challenges.cloudflare" in src or "turnstile" in src:
@@ -110,24 +113,10 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
                                 if box:
                                     cx = box["x"] + 30
                                     cy = box["y"] + box["height"] / 2
-                                    print(f"[{cache_key}] Clicking Turnstile widget at ({cx}, {cy})", flush=True)
+                                    print(f"[{cache_key}] Clicking Turnstile widget at ({cx}, {cy}) (one-shot)", flush=True)
                                     await page.mouse.click(cx, cy)
-                                    clicked = True
+                                    already_clicked = True
                                     break
-
-                        # 2. Fallback to frame selector click
-                        if not clicked:
-                            for frame in page.frames:
-                                if "challenges.cloudflare.com" in frame.url:
-                                    for sel in ["input[type=checkbox]", "#challenge-stage", "label", "body"]:
-                                        try:
-                                            el = await frame.query_selector(sel)
-                                            if el:
-                                                await el.click(timeout=1000)
-                                                print(f"[{cache_key}] Clicked Turnstile frame selector '{sel}'", flush=True)
-                                                break
-                                        except Exception:
-                                            pass
                     except Exception as click_err:
                         print(f"[{cache_key}] Click attempt error: {click_err}", flush=True)
 
