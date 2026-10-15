@@ -46,4 +46,4 @@ ENV PORT=10000
 EXPOSE 10000
 
 # Start Xvfb virtual display in background, then run uvicorn
-CMD sh -c "Xvfb :99 -screen 0 1280x800x24 -ac > /dev/null 2>&1 & DISPLAY=:99 uvicorn app:app --host 0.0.0.0 --port ${PORT:-10000}"
+CMD sh -c "Xvfb :99 -screen 0 1024x768x16 -ac > /dev/null 2>&1 & DISPLAY=:99 uvicorn app:app --host 0.0.0.0 --port ${PORT:-10000}"

@@ -46,16 +46,31 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-zygote",
+                "--disable-site-isolation-trials",
+                "--disable-extensions",
+                "--disable-default-apps",
+                "--renderer-process-limit=1",
+                "--js-flags=--max-old-space-size=128",
                 "--disable-blink-features=AutomationControlled",
-                "--window-size=1280,800"
+                "--window-size=1024,768"
             ]
         )
         try:
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 800}
+                viewport={"width": 1024, "height": 768}
             )
             page = await context.new_page()
+
+            # Abort heavy third-party ad networks to save 200MB+ RAM on 512MB container
+            await page.route(
+                "**/*",
+                lambda route: route.abort() if any(ad in route.request.url.lower() for ad in [
+                    "googlesyndication", "doubleclick", "google-analytics", "googletagmanager", "adservice", "amazon-adsystem"
+                ]) else route.continue_()
+            )
 
             try:
                 await page.goto(profile_url, timeout=30000, wait_until="domcontentloaded")
