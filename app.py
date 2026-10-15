@@ -83,7 +83,11 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
                 try:
                     title = await page.title()
                     print(f"[{cache_key}] Sec {i+1}: Title='{title}'", flush=True)
-                    if "profile | rlstats" in title.lower() or ("rlstats" in title.lower() and "moment" not in title.lower()):
+                    # Don't break if title is still loading/redirecting
+                    if "profile | rlstats" in title.lower() and not title.lower().startswith("loading"):
+                        loaded = True
+                        break
+                    elif "rlstats" in title.lower() and "moment" not in title.lower() and not title.lower().startswith("loading"):
                         loaded = True
                         break
                 except Exception:
@@ -125,7 +129,29 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
                     "error": f"Could not load profile for {username} on {platform_norm.upper()}. Profile may be private or not found."
                 }
 
-            html = await page.content()
+            # Wait for any in-flight navigation to settle
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception:
+                pass
+
+            # Safe HTML retrieval with retry in case navigation was still finalizing
+            html = ""
+            for attempt in range(5):
+                try:
+                    await page.wait_for_timeout(500)
+                    html = await page.content()
+                    if "id=\"titles\"" in html or "username" in html:
+                        break
+                except Exception as content_err:
+                    print(f"[{cache_key}] Content read attempt {attempt+1} notice: {content_err}", flush=True)
+                    await page.wait_for_timeout(1000)
+
+            if not html:
+                try:
+                    html = await page.content()
+                except Exception:
+                    html = ""
         finally:
             await browser.close()
 
