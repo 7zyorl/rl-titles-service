@@ -47,12 +47,9 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--no-zygote",
-                "--disable-site-isolation-trials",
                 "--disable-extensions",
                 "--disable-default-apps",
-                "--renderer-process-limit=1",
-                "--js-flags=--max-old-space-size=128",
+                "--renderer-process-limit=2",
                 "--disable-blink-features=AutomationControlled",
                 "--window-size=1024,768"
             ]
@@ -64,13 +61,21 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
             )
             page = await context.new_page()
 
-            # Abort heavy third-party ad networks to save 200MB+ RAM on 512MB container
-            await page.route(
-                "**/*",
-                lambda route: route.abort() if any(ad in route.request.url.lower() for ad in [
-                    "googlesyndication", "doubleclick", "google-analytics", "googletagmanager", "adservice", "amazon-adsystem"
-                ]) else route.continue_()
-            )
+            # Abort heavy third-party ad networks (proper async handler)
+            async def handle_route(route):
+                try:
+                    url = route.request.url.lower()
+                    if any(ad in url for ad in ["googlesyndication", "doubleclick", "google-analytics", "googletagmanager", "adservice", "amazon-adsystem"]):
+                        await route.abort()
+                    else:
+                        await route.continue_()
+                except Exception:
+                    try:
+                        await route.continue_()
+                    except Exception:
+                        pass
+
+            await page.route("**/*", handle_route)
 
             try:
                 await page.goto(profile_url, timeout=30000, wait_until="domcontentloaded")
@@ -96,20 +101,8 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
                 # If still on Cloudflare Turnstile, attempt to click the checkbox
                 if i in (3, 6, 9, 13):
                     try:
-                        # 1. Try clicking via Cloudflare challenge frames
-                        for frame in page.frames:
-                            if "challenges.cloudflare.com" in frame.url:
-                                for sel in ["input[type=checkbox]", "#challenge-stage", "label", "body"]:
-                                    try:
-                                        el = await frame.query_selector(sel)
-                                        if el:
-                                            await el.click(timeout=1000)
-                                            print(f"[{cache_key}] Clicked Turnstile frame selector '{sel}'", flush=True)
-                                            break
-                                    except Exception:
-                                        pass
-
-                        # 2. Try clicking iframe bounding box from the main page
+                        clicked = False
+                        # 1. Prioritize clicking iframe bounding box with real mouse click
                         for iframe in await page.query_selector_all("iframe"):
                             src = await iframe.get_attribute("src") or ""
                             if "challenges.cloudflare" in src or "turnstile" in src:
@@ -119,6 +112,22 @@ async def get_titles(platform: str = Query(...), username: str = Query(...)):
                                     cy = box["y"] + box["height"] / 2
                                     print(f"[{cache_key}] Clicking Turnstile widget at ({cx}, {cy})", flush=True)
                                     await page.mouse.click(cx, cy)
+                                    clicked = True
+                                    break
+
+                        # 2. Fallback to frame selector click
+                        if not clicked:
+                            for frame in page.frames:
+                                if "challenges.cloudflare.com" in frame.url:
+                                    for sel in ["input[type=checkbox]", "#challenge-stage", "label", "body"]:
+                                        try:
+                                            el = await frame.query_selector(sel)
+                                            if el:
+                                                await el.click(timeout=1000)
+                                                print(f"[{cache_key}] Clicked Turnstile frame selector '{sel}'", flush=True)
+                                                break
+                                        except Exception:
+                                            pass
                     except Exception as click_err:
                         print(f"[{cache_key}] Click attempt error: {click_err}", flush=True)
 
